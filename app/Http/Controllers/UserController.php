@@ -1,0 +1,885 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\BankDetail;
+use App\Models\RequiredDocument;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
+use App\Http\Requests\UserRequest;
+use App\Models\UserDocumentUpload;
+use App\Models\UserPermission;
+use App\Models\PermissionRole;
+use Illuminate\Http\Request;
+use App\Models\Permission;
+use App\Models\AddressLog;
+use App\Models\Setting;
+use App\Models\Deliver;
+use App\Models\Country;
+use App\Helpers\Helper;
+use App\Models\State;
+use App\Models\City;
+use App\Models\User;
+use App\Models\Role;
+use App\Models\UserAssignRole;
+
+
+
+class UserController extends Controller
+{
+    protected $moduleName = 'Users';
+
+    public function index(Request $request)
+    {
+        $roleids = auth()->user()->roles->pluck('id')->toArray();
+        $roles = array();
+        $Assignrole = '';
+        if(!in_array('1',$roleids)) {
+            $userassignroledata = UserAssignRole::whereIn('main_role_id',$roleids)->pluck('assign_role_id')->toArray();
+            if(!empty($userassignroledata)) {
+                $Assignrole = explode(',',implode(',',$userassignroledata));
+            }
+        }
+        if (!$request->ajax()) {
+            $moduleName = $this->moduleName;
+
+            if(!in_array('1',$roleids)) {
+                if(!empty($Assignrole)) {
+                    $roles = Role::active()->where('id', '!=', '4')->whereIn('id',$Assignrole)->get();
+                }
+            } else {
+                $roles = Role::active()->where('id', '!=', '4')->get();
+            }
+
+            return view('users.index', compact('moduleName', 'roles'));
+        }
+
+        $users = User::with(['roles', 'addedby', 'updatedby'])->withoutGlobalScope('ApprovedScope')->whereHas('role', function ($builder) use ($Assignrole) {
+            $builder->where('roles.id', '!=', '4');
+            if(isset($Assignrole) && !empty($Assignrole)) {
+                $builder->whereIn('roles.id', $Assignrole);
+            }
+        });
+
+        if ($filterRole = $request->filterRole) {
+            if ($filterRole != '') {
+                $users->whereHas('roles', function($q) use($filterRole) {
+                    $q->where('role_id', $filterRole);
+                });
+            }
+        }
+
+        if (isset($request->filterStatus)) {
+            if ($request->filterStatus != '') {
+                $users->where('status', $request->filterStatus);
+            }
+        }
+
+        if (isset($request->order[0]['column']) && $request->order[0]['column'] == 0) {
+            $users->orderBy('id', 'desc');
+        }
+
+        return dataTables()->eloquent($users)
+            ->editColumn('addedby.name', function($user) {
+                return "<span data-mdb-toggle='tooltip' title='".date('d-m-Y h:i:s A', strtotime($user->created_at))."'>".($user->addedby->name ?? '-')."</span>";
+            })
+            ->editColumn('updatedby.name', function($user) {
+                if (($user->updatedby->name ?? '') != '-') {
+                    return "<span data-mdb-toggle='tooltip' title='".date('d-m-Y h:i:s A', strtotime($user->updated_at))."'>".($user->updatedby->name ?? '-')."</span>";
+                } else {
+                    return ($user->updatedby->name ?? '-');
+                }
+            })
+            ->editColumn("role.name", function($users) {
+                $roleName = '';
+                foreach ($users->roles as $role) {
+                    $roleName .= $role->name.'<br />';
+                }
+                return $roleName;
+            })
+            ->addColumn('action', function ($users) use ($roleids){
+
+                $variable = $users;
+
+                $action = "";
+                $action .= '<div class="d-flex align-items-center justify-content-center">';
+                if (auth()->user()->hasPermission("users.edit")) {
+                    $url = route("users.edit", encrypt($variable->id));
+                    $action .= view('buttons.edit', compact('variable', 'url'));
+                }
+                if (auth()->user()->hasPermission("users.view")) {
+                    $url = route("users.view", encrypt($variable->id));
+                    $action .= view('buttons.view', compact('variable', 'url'));
+                }
+                if (auth()->user()->hasPermission("users.activeinactive")) {
+                    if ($users->id !== auth()->user()->id && $users->status != 2) {
+                        $url = route("users.activeinactive", encrypt($variable->id));
+                        $action .= view('buttons.status', compact('variable', 'url'));
+                    } else if($users->status == 2 && in_array('1',$roleids)){
+                        $url = route("users.approve", encrypt($variable->id));
+                        $action .= view('buttons.status', compact('variable', 'url'));
+                    }
+                }
+                if (auth()->user()->hasPermission("users.delete")) {
+                    if ($users->id !== auth()->user()->id) {
+                        $url = route("users.delete", encrypt($variable->id));
+                        $action .= view('buttons.delete', compact('variable', 'url'));
+                    }
+                }
+                $action .= '</div>';
+
+                return $action;
+            })
+            ->editColumn("status",function($users) {
+                if ($users->status == 1) {
+                    return "<span class='badge bg-success'>Active</span>";
+                } else if ($users->status == 2) {
+                    return "<span class='badge bg-warning'>Pending</span>";
+                } else {
+                    return "<span class='badge bg-danger'>Inactive</span>";
+                }
+            })
+            ->rawColumns(['action', 'status', 'role.name', 'addedby.name', 'updatedby.name'])
+            ->addIndexColumn()
+            ->make(true);
+    }
+
+    public function create()
+    {
+        $moduleName = 'User';
+        $moduleLink = route('users.index');
+
+
+        $countries = Helper::getCountriesOrderBy();
+
+        $roleids = auth()->user()->roles->pluck('id')->toArray();
+
+        $roles = array();
+
+        if(!in_array('1',$roleids)) {
+            $userassignroledata = UserAssignRole::whereIn('main_role_id',$roleids)->pluck('assign_role_id')->toArray();
+            if(!empty($userassignroledata)) {
+                $Assignrole = explode(',',implode(',',$userassignroledata));
+                $roles = Role::active()->where('id', '!=', '4')->whereIn('id',$Assignrole)->get();
+            }
+
+        } else {
+            $roles = Role::active()->where('id', '!=', '4')->get();
+        }
+
+        $permission = PermissionRole::whereIn('role_id', $roleids)->select('permission_id')->pluck('permission_id')->toArray();
+
+        $userPermission = UserPermission::where('user_id', auth()->user()->id)->select('permission_id')->pluck('permission_id')->toArray();
+        $permission = array_unique(array_merge($userPermission, $permission));
+        // array_push($permission, 45);
+
+        $permission = Permission::whereIn('id', $permission)->get()->groupBy('model');
+
+        return view('users.create', compact('moduleName', 'roles', 'countries', 'permission','moduleLink'));
+    }
+
+    public function store(UserRequest $request)
+    {
+        DB::beginTransaction();
+
+        try {
+
+            /* create moldcell user when manager role select */
+            if ($request->role == 7) {
+                $mobileNum = str_replace(' ', '', $request->country_dial_code.$request->phone);
+                $data = (object)['username' => $request->username, 'name' => $request->name, 'password' => $request->password, "email" => $request->email, "mobile" => $mobileNum];
+                $response = Helper::createMoldcellEmployee($data);
+                
+                if ($response->status == 200) {    
+                } else {
+                    $message = 'Moldcell Error : Something went wrong when create user in Moldcell, Please try again.';
+                    if (isset($response->response->errors[0]->message)) {
+                        $message = 'Moldcell Error : User '.$response->response->errors[0]->message;
+                    }
+                    return redirect()->route('users.create')->with('warning', $message);
+                }
+            }
+
+            $user = new User();
+            $user->name = $request->name;
+            $user->username = $request->username;
+            $user->email = $request->email;
+            $user->password = Hash::make($request->password);
+            $user->address_line_1 = $request->address_line_1;
+            $user->phone = $request->phone;
+            $user->country_dial_code = $request->country_dial_code;
+            $user->country_iso_code = $request->country_iso_code;
+            $user->country_id = $request->country;
+            $user->city_id = $request->city;
+            $user->postal_code = $request->postal_code;
+            $user->added_by = auth()->user()->id;
+            $user->save();
+
+            $perm = $request->permission;
+
+            if ($request->role == '3' && !empty($perm)) {
+                $perm = array_diff($perm, Permission::select('id')->where('model', 'SalesOrderStatus')->pluck('id')->toArray());
+            }
+
+            $user->roles()->attach($request->role);
+            $user->userpermission()->attach($perm);
+
+            $errorWhileSavingLatLong = false;
+
+            if ($request->role == '3') {
+                $errorWhileSavingLatLong = true;
+
+                $key = trim(Setting::first()?->geocode_key);
+
+                if (env('GEOLOCATION_API') == 'true') {
+                    if (!empty($key)) {
+                        $address = trim("{$user->address_line_1} {$user->city_id} {$user->postal_code} {$user->country_id}");
+                        $address = str_replace(' ', '+', $address);
+                        $url = "https://maps.googleapis.com/maps/api/geocode/json?address={$address}&key={$key}";
+
+                        $data = json_decode(file_get_contents($url), true);
+
+                        if ($data['status'] == "OK") {
+                            $lat = $data['results'][0]['geometry']['location']['lat'];
+                            $long = $data['results'][0]['geometry']['location']['lng'];
+
+                            if (!empty($lat)) {
+                                $u = User::find($user->id);
+                                $u->lat = $lat;
+                                $u->long = $long;
+                                $u->save();
+
+                                $errorWhileSavingLatLong = false;
+                            }
+
+                            AddressLog::create([
+                                'city' => $user->city_id,
+                                'country' => Country::where('id', $user->country_id)->first()->name ?? $user->country_id,
+                                'postal_code' => $user->postal_code,
+                                'address' => $user->address_line_1,
+                                'lat' => $lat,
+                                'long' => $long,
+                                'user_id' => $user->id,
+                                'added_by' => auth()->user()->id,
+                            ]);
+                        }
+                    }
+                } else {
+
+                    $u = User::find($user->id);
+                    $u->lat = '22.2735381';
+                    $u->long = '70.764107';
+                    $u->save();
+
+                    $errorWhileSavingLatLong = false;
+                }
+            }
+
+            DB::commit();
+
+            if ($errorWhileSavingLatLong === false) {
+                return redirect()->route('users.index')->with('success', 'User added successfully.');
+            } else {
+                return redirect()->route('users.edit', encrypt($user->id))->with('warning', 'Please provide accurate address.');
+            }
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Helper::logger("User Add: " . $e->getMessage() . " on Line no : " . $e->getLine());
+            return redirect()->back()->with(['error' => Helper::$errorMessage]);
+        }
+    }
+
+    public function edit($id)
+    {
+        $moduleName = 'User';
+        $moduleLink = route('users.index');
+        $user = User::with('roles')->withoutGlobalScope('ApprovedScope')->where('id', decrypt($id))->first();
+        $roles = array();
+
+        $roleids = auth()->user()->roles->pluck('id')->toArray();
+
+        if(!in_array('1',$roleids)) {
+            $userassignroledata = UserAssignRole::whereIn('main_role_id',$roleids)->pluck('assign_role_id')->toArray();
+            if(!empty($userassignroledata)) {
+                $Assignrole = explode(',',implode(',',$userassignroledata));
+                $roles = Role::active()->where('id', '!=', '4')->whereIn('id',$Assignrole)->get();
+            }
+
+        } else {
+            $roles = Role::active()->where('id', '!=', '4')->get();
+        }
+
+        $countries = Helper::getCountriesOrderBy();
+        $states = State::active()->where('country_id', $user->country_id)->select('id', 'name')->pluck('name', 'id')->toArray();
+        $cities = City::active()->where('state_id', $user->state_id)->select('id', 'name')->pluck('name', 'id')->toArray();
+
+
+        $permission = PermissionRole::where('role_id', $user->roles->first()->id)->select('permission_id')->pluck('permission_id')->toArray() ?? [];
+        // array_push($permission, 45);
+        $permission = Permission::whereIn('id', $permission)->get()->groupBy('model');
+
+        if (in_array(1, $user->roles->pluck('id')->toArray())) {
+            $userPermissions = Permission::select('id')->pluck('id')->toArray();
+        } else {
+            $userPermissions = UserPermission::where('user_id', $user->id)->select('permission_id')->pluck('permission_id')->toArray();
+        }
+
+        $documents = RequiredDocument::where('role_id', $user->roles->first()->id)->orderBy('sequence', 'ASC')->get();
+
+        return view('users.edit', compact('moduleName', 'user', 'roles', 'countries', 'states', 'cities', 'id', 'userPermissions', 'permission','moduleLink', 'documents'));
+    }
+
+    public static function addressChanged ($user, $country, $city, $postalcode, $address) {
+        if (trim($user->country_id) !== trim($country)) {
+           return true;
+        }
+
+        if (trim($user->city_id) !== trim($city)) {
+            return true;
+        }
+
+        if (trim($user->postal_code) !== trim($postalcode)) {
+            return true;
+        }
+
+        if (trim($user->address_line_1) !== trim($address)) {
+            return true;
+        }
+
+         return false;
+    }
+
+    public function update(UserRequest $request, $id)
+    {
+        if (!file_exists(storage_path('app/public/documents'))) {
+            mkdir(storage_path('app/public/documents'), 0777, true);
+        }
+
+        DB::beginTransaction();
+
+        try {
+            $user = User::withoutGlobalScope('ApprovedScope')->find(decrypt($id));
+
+            /* create moldcell user when manager role select */
+            if ($request->role == 7) {
+                $mobileNum = str_replace(' ', '', $request->country_dial_code.$request->phone);
+                $data = (object)['username' => $request->username, 'name' => $request->name, 'password' => $request->password, "email" => $request->email, "mobile" => $mobileNum];
+                $response = Helper::editMoldcellEmployee($data);
+                
+                if ($response->status == 200) {
+                } else {
+                    $message = 'Moldcell Error : Something went wrong when update user in Moldcell, Please try again.';
+                    if (isset($response->response->errors[0]->message)) {
+                        $message = 'Moldcell Error : User '.$response->response->errors[0]->message;
+                    }
+                    return redirect()->route('users.edit', $id)->with('warning', $message);
+                }
+            }
+            
+            $documents = RequiredDocument::where('role_id', $request->role)->orderBy('sequence', 'ASC')->get();
+
+            if (in_array('3', $user->roles->pluck('id')->toArray()) && $request->role != '3') {
+
+                if (Deliver::where('user_id', $user->id)->where('status', 1)->exists()) {
+                    DB::rollBack();
+                    return redirect()->route('users.edit', $id)->with('warning', 'Can\'t change role for this user at the moment.');
+                } else {
+
+                    $user->name = $request->name;
+                    $user->email = $request->email;
+                    $user->phone = $request->phone;
+                    $user->country_dial_code = $request->country_dial_code;
+                    $user->country_iso_code = $request->country_iso_code;
+                    $user->country_id = $request->country;
+                    $user->city_id = $request->city;
+                    $user->address_line_1 = $request->address_line_1;
+                    $user->postal_code = $request->postal_code;
+                    $user->password =  !empty(trim($request->password)) ? Hash::make($request->password) : $user->password;
+                    $user->updated_by = auth()->user()->id;
+                    $user->save();
+
+                    $user->roles()->sync($request->role);
+                    $user->userpermission()->sync($request->permission);
+
+                    if ($request->role != $user->roles->first()->id) {
+                        $deletableDocs = UserDocumentUpload::where('user_id', $user->id)->get();
+                        foreach ($deletableDocs as $deletable) {
+                            if (file_exists(storage_path("app/public/documents/{$deletable->name}"))) {
+                                unlink(storage_path("app/public/documents/{$deletable->name}"));
+                            }
+                            UserDocumentUpload::where('id', $deletable->id)->delete();
+                        }
+                    }
+
+                    foreach ($documents as $document) {
+                        if (isset($request->document[$document->id])) {
+                            foreach ($request->document[$document->id] as $file) {
+                                $name = 'DOC-' . date('YmdHis') . uniqid() . '.' . $file->getClientOriginalExtension();
+                                $file->move(storage_path('app/public/documents'), $name);
+
+                                if (file_exists(storage_path("app/public/documents/{$name}"))) {
+                                    UserDocumentUpload::create([
+                                        'document_id' => $document->id,
+                                        'user_id' => $user->id,
+                                        'name' => $name
+                                    ]);
+                                }
+                            }
+                        }
+                    }
+
+                    DB::commit();
+
+                    return redirect()->route('users.index')->with('success', 'User updated successfully.');
+
+                }
+
+            } else {
+
+                $addressChanged = self::addressChanged($user, $request->country, $request->city, $request->postal_code, $request->address_line_1);
+                $errorWhileSavingLatLong = true;
+                $notDriver = false;
+
+                if (!in_array('3', $user->roles->pluck('id')->toArray()) && $request->role != '3') {
+                    $notDriver = true;
+                }
+
+                if ((!in_array('3', $user->roles->pluck('id')->toArray()) && $request->role == '3') || $request->role == '3' && $addressChanged) {
+                    $key = trim(Setting::first()?->geocode_key);
+
+                    if (env('GEOLOCATION_API') == 'true') {
+                        if (!empty($key)) {
+                            $address = trim("{$request->address_line_1} {$request->city} {$request->postal_code} {$request->country}");
+                            $address = str_replace(' ', '+', $address);
+                            $url = "https://maps.googleapis.com/maps/api/geocode/json?address={$address}&key={$key}";
+
+                            $data = json_decode(file_get_contents($url), true);
+
+                            if ($data['status'] == "OK") {
+                                $lat = $data['results'][0]['geometry']['location']['lat'];
+                                $long = $data['results'][0]['geometry']['location']['lng'];
+
+                                if (!empty($lat)) {
+                                    $u = User::withoutGlobalScope('ApprovedScope')->find($user->id);
+                                    $u->lat = $lat;
+                                    $u->long = $long;
+                                    $u->save();
+
+                                    $errorWhileSavingLatLong = false;
+                                }
+
+                                AddressLog::create([
+                                    'city' => $user->city_id,
+                                    'country' => Country::where('id', $user->country_id)->first()->name ?? $user->country_id,
+                                    'postal_code' => $user->postal_code,
+                                    'address' => $user->address_line_1,
+                                    'lat' => $lat,
+                                    'long' => $long,
+                                    'user_id' => $user->id,
+                                    'added_by' => auth()->user()->id,
+                                ]);
+                            }
+                        }
+                    } else {
+                        $lat = '22.2735381';
+                        $long = '70.764107';
+
+                        $errorWhileSavingLatLong = false;
+                    }
+
+                } else if ($request->role == '3' && $addressChanged === false) {
+                    $errorWhileSavingLatLong = false;
+                }
+
+                $user->name = $request->name;
+                $user->email = $request->email;
+                $user->phone = $request->phone;
+                $user->country_dial_code = $request->country_dial_code;
+                $user->country_iso_code = $request->country_iso_code;
+                $user->country_id = $request->country;
+                $user->city_id = $request->city;
+                $user->address_line_1 = $request->address_line_1;
+                $user->postal_code = $request->postal_code;
+                $user->password =  !empty(trim($request->password)) ? Hash::make($request->password) : $user->password;
+                $user->updated_by = auth()->user()->id;
+                $user->save();
+
+                $perm = $request->permission;
+
+                if ($request->role == '3' && !empty($perm)) {
+                    $perm = array_diff($perm, Permission::select('id')->where('model', 'SalesOrderStatus')->pluck('id')->toArray());
+                }
+
+                $user->roles()->sync($request->role);
+                $user->userpermission()->sync($perm);
+
+                if ($request->role != $user->roles->first()->id) {
+                    $deletableDocs = UserDocumentUpload::where('user_id', $user->id)->get();
+                    foreach ($deletableDocs as $deletable) {
+                        if (file_exists(storage_path("app/public/documents/{$deletable->name}"))) {
+                            unlink(storage_path("app/public/documents/{$deletable->name}"));
+                        }
+                        UserDocumentUpload::where('id', $deletable->id)->delete();
+                    }
+                }
+
+                foreach ($documents as $document) {
+                    if (isset($request->document[$document->id])) {
+
+                        foreach ($request->document[$document->id] as $file) {
+                            $name = 'DOC-' . date('YmdHis') . uniqid() . '.' . $file->getClientOriginalExtension();
+                            $file->move(storage_path('app/public/documents'), $name);
+
+                            if (file_exists(storage_path("app/public/documents/{$name}"))) {
+                                UserDocumentUpload::create([
+                                    'document_id' => $document->id,
+                                    'user_id' => $user->id,
+                                    'name' => $name
+                                ]);
+                            }
+                        }
+                    }
+                }
+
+                DB::commit();
+
+                if ($errorWhileSavingLatLong === false) {
+                    return redirect()->route('users.index')->with('success', 'User updated successfully.');
+                } else {
+                    if ($notDriver) {
+                        return redirect()->route('users.index')->with('success', 'User updated successfully.');
+                    } else {
+                        return redirect()->route('users.edit', $id)->with('warning', 'Please provide accurate address.');
+                    }
+                }
+            }
+
+        } catch (\Exception $e) {
+            Helper::logger("User Edit: " . $e->getMessage() . " on Line no : " . $e->getLine());
+            DB::rollBack();
+            return redirect()->back()->with(['error' => Helper::$errorMessage]);
+        }
+    }
+
+    public function show($id)
+    {
+        $moduleName = 'User';
+        $moduleLink = route('users.index');
+        $user = User::with('roles')->withoutGlobalScope('ApprovedScope')->where('id', decrypt($id))->first();
+        $roles = Role::active()->get();
+
+        $permission = PermissionRole::where('role_id', $user->roles->first()->id)->select('permission_id')->pluck('permission_id')->toArray() ?? [];
+
+        array_push($permission, 45);
+        $permission = Permission::whereIn('id', $permission)->get()->groupBy('model');
+
+        if (in_array(1, $user->roles->pluck('id')->toArray())) {
+            $userPermissions = Permission::select('id')->pluck('id')->toArray();
+        } else {
+            $userPermissions = UserPermission::where('user_id', $user->id)->select('permission_id')->pluck('permission_id')->toArray();
+        }
+
+        $docNames = RequiredDocument::where('role_id', $user->roles->first()->id)->withTrashed()->get()->keyBy('id')->toArray();
+        $documents = UserDocumentUpload::with(['document' => function ($builder) {
+            return $builder->withTrashed();
+        }])->where('user_id', $user->id)->get()->groupBy('document_id');
+
+        return view('users.view', compact('moduleName', 'user', 'roles', 'userPermissions', 'permission','moduleLink', 'documents', 'docNames'));
+    }
+
+    public function destroy($id)
+    {
+        DB::beginTransaction();
+
+        try {
+
+            $user = User::with('roles')->withoutGlobalScope('ApprovedScope')->find(decrypt($id));
+
+            if (in_array(7, $user->roles->pluck('id')->toArray())) {
+                Helper::deleteMoldcellEmployee($user->username);
+            }
+
+            if (Deliver::where('user_id', $user->id)->whereIn('status', [0, 1])->exists()) {
+                DB::rollBack();
+                return response()->json(['error' => 'Can not delete this driver user.', 'status' => 500]);
+            }
+
+            UserDocumentUpload::where('user_id', $user->id)->delete();
+            UserPermission::where('user_id', $user->id)->delete();
+            BankDetail::where('user_id', $user->id)->delete();
+            $user->roles()->detach();
+            $user->userpermission()->detach();
+            $user->delete();
+
+            DB::commit();
+            return response()->json(['success' => 'User deleted successfully.', 'status' => 200]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['error' => Helper::$errorMessage, 'status' => 500]);
+        }
+    }
+
+    public function status($id)
+    {
+        try {
+            $user = User::withoutGlobalScope('ApprovedScope')->find(decrypt($id));
+
+            if (Deliver::where('user_id', $user->id)->where('status', [0, 1])->exists()) {
+                return response()->json(['error' => 'Can not inactive this driver user at the moment.', 'status' => 500]);
+            }
+
+            $user->status = $user->status == 1 ? 0 : 1;
+            $user->save();
+
+            if ($user->status == 1) {
+                return response()->json(['success' => 'User activated successfully.', 'status' => 200]);
+            } else {
+                return response()->json(['success' => 'User inactivated successfully.', 'status' => 200]);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['error' => Helper::$errorMessage, 'status' => 500]);
+        }
+    }
+
+    public function checkUserEmail(Request $request)
+    {
+
+        $user = User::withoutGlobalScope('ApprovedScope')->where('email', trim($request->email));
+        if(isset($request->role_id) && $request->role_id !="") {
+
+            $user->whereHas('role', function ($q)use($request) {
+                $q->where('roles.id', $request->role_id);
+            });
+        }
+        if ($request->has('id') && !empty(trim($request->id))) {
+            $user = $user->where('id', '!=', decrypt($request->id));
+        }
+
+        return response()->json($user->doesntExist());
+    }
+
+    public function rolePermissions(Request $request) {
+        $role = Role::where('id', $request->id);
+
+        if ($role->exists()) {
+
+            if ($request->user) {
+                if ($request->id == 1) {
+                    $userPermissions = Permission::select('id')->pluck('id')->toArray();
+                } else {
+                    $userPermissions = UserPermission::where('user_id', $request->user)->select('permission_id')->pluck('permission_id')->toArray();
+                }
+            } else {
+                $userPermissions = [];
+            }
+
+            $permission = PermissionRole::where('role_id', $request->id)->select('permission_id')->pluck('permission_id')->toArray() ?? [];
+            $permission = Permission::whereIn('id', $permission)->get()->groupBy('model');
+            $roleId = $role->first()->id ?? 0;
+
+            $documents = RequiredDocument::where('role_id', $request->id)->get();
+            return response()->json(['status' => true, 'html' => view('users.permissions', compact('permission', 'userPermissions', 'roleId'))->render(), 'document_html' => view('users.document-html', compact('documents'))->render(), 'documents' => $documents]);
+        }
+
+        return response()->json(['status' => false, 'message' => Helper::$notFound]);
+    }
+
+    public function register(Request $request, $role, $uid = 1) {
+
+        if ($request->method() == 'GET') {
+            if ($uid == 1) {
+                $uid = base64_encode(base64_encode(1));
+            }
+
+            $decryptedId = base64_decode(base64_decode($role));
+
+            if (Role::where('id', $decryptedId)->active()->doesntExist()) {
+                return redirect()->route('login')->with('error', 'This link is not valid for registration.');
+            }
+
+            $url = url("register/{$role}/{$uid}");
+            $countries = Helper::getCountriesOrderBy();
+            $documents = RequiredDocument::where('role_id', $decryptedId)->orderBy('sequence', 'ASC')->get();
+
+            return view('auth.register', compact('url', 'countries', 'documents'));
+
+        } else if ($request->method() == 'POST') {
+
+            $role = base64_decode(base64_decode($role));
+            $rolseData = Role::where('id', $role)->active()->first();
+            if (Role::find($role) !== null && $role != 1 && !empty($rolseData)) {
+
+                $documents = RequiredDocument::where('role_id', $role)->orderBy('sequence', 'ASC')->get();
+
+                $validations = [
+                    'name' => 'required',
+                    'email' => "required|email|unique:users,email,NULL,id,deleted_at,NULL",
+                    'password' => 'required|min:8|max:16',
+                    'confirm_password' => 'same:password',
+                    'country' => 'required',
+                    'city' => 'required',
+                    'postal_code' => 'required|max:8'
+                ];
+
+                $validationMessages = [
+                    'name.required'        => 'Name is required.',
+                    'email.required'       => 'Email is required.',
+                    'email.email'          => 'Email format is invalid.',
+                    'email.unique'         => 'This email is already exists.',
+                    'password.required'    => 'Create a Password.',
+                    'password.min'         => 'Minimum length should be 8 characters.',
+                    'password.max'         => 'Maximum length should be 16 characters.',
+                    'country.required'     => 'Select a country.',
+                    'city.required'        => 'Enter city.',
+                    'postal_code.required' => 'Enter postal code.',
+                    'postal_code.max'      => 'Maximum 8 characters allowed for postal code.'
+                ];
+
+                foreach ($documents as $document) {
+                    if (isset($request->document[$document->id])) {
+
+                        $isRequired = "";
+
+                        if ($document->is_required) {
+                            $isRequired = "required|";
+                            $validationMessages["document.{$document->id}" . '.required'] = "Please upload specified document.";
+                        }
+
+                        $validations["document.{$document->id}"] = "{$isRequired}max:{$document->maximum_upload_count}";
+                        $validationMessages["document.{$document->id}" . '.max'] = "Maximum " . $document->maximum_upload_count . " files can be uploaded.";
+
+                        $mxFileUploadSize = $document->maximum_upload_size / 1024;
+
+                        if ($document->allow_only_specific_file_format) {
+                            $validations["document.{$document->id}" . '.*'] = "file|max:{$mxFileUploadSize}|mimes:" . Helper::returnExtensions($document->allowed_file, '', ',');
+                            $validationMessages["document.{$document->id}" . '.*.mimes'] = "Only " . Helper::returnExtensions($document->allowed_file, '.', ',') . " file formats are supported.";
+                        } else {
+                            $validations["document.{$document->id}" . '.*'] = "file|max:{$mxFileUploadSize}";
+                        }
+
+                        $validationMessages["document.{$document->id}" . '.*.file'] = "Please upload specified document.";
+                        $validationMessages["document.{$document->id}" . '.*.max'] = "Maximum " . Helper::formatBytes($document->maximum_upload_size) . " size of file can be uploaded.";
+                    }
+                }
+
+                $this->validate($request, $validations, $validationMessages);
+
+                try {
+
+                    $user = new User();
+                    $user->name = $request->name;
+                    $user->email = $request->email;
+                    $user->phone = $request->phone;
+                    $user->country_dial_code = $request->country_dial_code;
+                    $user->country_iso_code = $request->country_iso_code;
+                    $user->password = Hash::make($request->password);
+                    $user->country_id = $request->country;
+                    $user->city_id = $request->city;
+                    $user->postal_code = $request->postal_code;
+                    $user->added_by = base64_decode(base64_decode($uid));
+                    if(isset($rolseData->is_user_activation) && $rolseData->is_user_activation==1){
+                        $user->status = 2;
+                    }
+                    $user->save();
+
+                    $rolePerm = PermissionRole::where('role_id', $role)->select('permission_id')->pluck('permission_id')->toArray();
+
+                    $user->roles()->attach([$role]);
+                    $user->userpermission()->sync($rolePerm);
+
+                    if (!file_exists(storage_path('app/public/documents'))) {
+                        mkdir(storage_path('app/public/documents'), 0777, true);
+                    }
+
+                    foreach ($documents as $document) {
+                        if (isset($request->document[$document->id])) {
+                            foreach ($request->document[$document->id] as $file) {
+                                $name = 'DOC-' . date('YmdHis') . uniqid() . '.' . $file->getClientOriginalExtension();
+                                $file->move(storage_path('app/public/documents'), $name);
+
+                                if (file_exists(storage_path("app/public/documents/{$name}"))) {
+                                    UserDocumentUpload::create([
+                                        'document_id' => $document->id,
+                                        'user_id' => $user->id,
+                                        'name' => $name
+                                    ]);
+                                }
+                            }
+                        }
+                    }
+
+                    if (auth()->check()) {
+                        auth()->logout();
+                    }
+
+                    if(isset($rolseData->is_user_activation) && $rolseData->is_user_activation == 1){
+                        return redirect()->route('login')->with('success', 'Your registration has been completed successfully. You will be able to log in once your account has been approved by the administrator.');
+                    }
+
+                    session()->flush();
+                    $authenticate = auth()->attempt(['email' => $request->email, 'password' => $request->password]);
+
+                    if ($authenticate) {
+                        return redirect()->intended('dashboard');
+                    } else {
+                        return redirect()->route('login')->with('success', 'Registration was successful.');
+                    }
+
+                } catch (\Exception $e) {
+                    Helper::logger($e->getMessage() . ' ' . $e->getLine());
+                    return redirect()->route('login')->with('error', 'This link is not valid for registration.');
+                }
+
+            } else {
+                return redirect()->route('login')->with('error', 'This link is not valid for registration.');
+            }
+
+        } else {
+            return redirect()->route('login');
+        }
+
+    }
+    public function approve($id)
+    {
+        try {
+            $user = User::withoutGlobalScope('ApprovedScope')->find(decrypt($id));
+
+            $user->status = 1;
+            $user->approvedDate = now();
+            $user->save();
+
+            if ($user->status == 1) {
+                return response()->json(['success' => 'User approved successfully.', 'status' => 200]);
+            } else {
+                return response()->json(['success' => 'User not approve. Please try after some time', 'status' => 200]);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['error' => Helper::$errorMessage, 'status' => 500]);
+        }
+    }
+
+    public function removeUserDocument(Request $request) {
+        $response = false;
+        if ($doc = UserDocumentUpload::find($request->id)) {
+            if (storage_path("app/public/documents/{$doc->name}")) {
+                @unlink(storage_path("app/public/documents/{$doc->name}"));
+                $response = true;
+            }
+            $doc->delete();
+        }
+
+        return response()->json($response);
+    }
+
+    public function checkUsername(Request $request)
+    {
+        $user = User::withoutGlobalScope('ApprovedScope')->where('username', trim($request->username));
+
+        if ($request->has('id') && !empty(trim($request->id))) {
+            $user = $user->where('id', '!=', decrypt($request->id));
+        }
+
+        return response()->json($user->doesntExist());
+    }
+}

@@ -1,0 +1,98 @@
+<div class="col-12">
+    <div class="row">
+        <div class="form-group">
+            <label for="docs" class="c-gr f-500 f-16 w-100 mb-2">Upload files :
+                <a data-toggle="tooltip" class="deleteBtn" title="Only image and pdf file allowed to upload.">
+                    <i class='fa fa-info-circle' aria-hidden='true' style="color: #15283c;"></i>
+                </a>
+            </label>
+            <input class="form-control" name="docs[]" id="docs" type="file" readonly style="background:#efefef" multiple>
+        </div>
+
+        <div class="form-group">
+            <label for="comment" class="c-gr f-500 f-16 w-100 mb-2"> Comment :</label>
+            <textarea name="comment" id="comment" cols="30" rows="10" class="form-control" placeholder="Add comment"></textarea>
+        </div>
+    </div>
+</div>
+<div class="col-md-12">
+    <div
+        class="cardsHeader f-20 f-600 c-36 f-700 border-0 ps-0 tableHeading position-relative my-4">
+        <span>Products</span>
+    </div>
+</div>
+<div class="col-md-12">
+    <div class="row">
+
+        <div class="table-responsive">
+            <input type="hidden">
+            <table class="table table-bordered customLayout">
+                <thead>
+                    <tr>
+
+                        <th class="block-a"> Driver <span class="text-danger">*</span> </th>
+
+                        <th class="block-b">Product <span class="text-danger">*</span> </th>
+
+                        <th class="block-c">Quantity <span class="text-danger">*</span> </th>
+
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+
+                <tbody class="upsertable">
+                    <tr>
+
+                        <td class="block-a">
+                            <div style="min-width: 200px;max-width:280px" class="removable-driver">
+                                <select name="driver[0]" data-indexid="0" id="driver-0" class="select2 select2-hidden-accessible m-driver" style="width:100%" data-placeholder="Select a Driver">
+                                    @forelse($drivers as $did => $dname)
+                                        @if($loop->first)
+                                        <option value="" selected> --- Select a Driver --- </option>
+                                        @endif
+                                        <option value="{{ $did }}">{{ $dname }}</option>
+                                        @empty
+                                        <option value="" selected> --- No Driver Available --- </option>
+                                    @endforelse
+                                </select>
+                            </div>
+                        </td>
+
+                        <td class="block-b">
+                            <div style="min-width: 200px;max-width:280px" class="removable-product">
+                                <select name="product[0]" data-indexid="0" id="product-0" class="product2 select2-hidden-accessible m-product" style="width:100%" data-placeholder="Select a Product">
+                                    <option value="" selected> --- Select a Product --- </option>
+                                </select>
+                            </div>
+                        </td>
+
+                        <td class="block-c">
+                            <div style="min-width: 200px;">
+                                <input type="number" data-indexid="0" name="quantity[0]" id="quantity-0" class="form-control m-quantity" style="background:#ffffff" min='1'>
+                            </div>
+                        </td>
+
+                        <td style="width:100px;">
+                            <div style="min-width: 100px;">
+                                <button type="button" class="btn btn-primary addNewRow">+</button>
+                                <button type="button" class="btn btn-danger removeRow" tabindex="-1">-</button>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td class="block-a"></td>
+                        <td class="block-b"></td>
+                        <td class="block-c">
+                            <div style="min-width: 200px;">
+                                <input type="number" class="form-control mt-quantity" style="background:#efefef" value="0" readonly>
+                            </div>
+                        </td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+</div>
